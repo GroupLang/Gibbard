@@ -185,6 +185,8 @@ def register_defaults_in_s3(BUCKET):
     s3.Object(BUCKET, 'default_config.json').put(Body=json.dumps(config))
     
 if __name__ == "__main__":
-    BUCKET = os.environ.get['S3_PRIVATE_BUCKET']
+    import sys
+    sys.path.insert(0, os.getcwd())
+    from chalicelib.credentials import PRIVATE_BUCKET as BUCKET
     register_defaults_in_s3(BUCKET)
     print("Done")
