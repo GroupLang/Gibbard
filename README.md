@@ -1,7 +1,7 @@
-# GroupLang
+# GroupLang-non-aws
 LLM-powered telegram bot that can interact with groups of humans for varied collaborative activities. The current example use case is an agent that can rely on humans as experts in addition to using documents when answering user queries. 
 
-The running version of the bot is currently deployed in AWS Lambda and is built using [LangChain](https://python.langchain.com/en/latest/index.html) as an LLM-framework. But we are [migrating](#migration)
+The running version of the bot is currently deployed in LocalStack Lambda and is built using [LangChain](https://python.langchain.com/en/latest/index.html) as an LLM-framework. But we are [migrating](#migration)
 
 ## Features
 - [x] Index and answer questions using .txt and .pdf documents, and urls from github repositories.
@@ -24,44 +24,63 @@ https://github.com/Sam1320/GroupLang/assets/33493647/fc02e062-b07a-4f04-b1c8-740
 
 
 # Getting Started
-## Initial Setup 
-
+## Setup 
 1. Create an [OpenAI account](https://openai.com/api/) and [get an API Key](https://platform.openai.com/account/api-keys).
-2. Create an [AWS account](https://aws.amazon.com/es/).
-3. Setup your Telegram bot. You can follow [this instructions](https://core.telegram.org/bots/tutorial#obtain-your-bot-token) to get your token.
-4. Create 2 S3 buckets in your AWS account, one public used as storage for new bots created and one private used for storing global defaults.
-5. Create a Pinecone account and get an API key.
-6. Create a Serper account and get an API key.
-7. Go to `.chalice/config.json` and stablish the configurations:
-- `TELEGRAM_TOKEN` with your Telegram token. 
-- `MAIN_BOT_NAME` with the *username* of your main bot.
+2. Setup your Telegram bot. You can follow [this instructions](https://core.telegram.org/bots/tutorial#obtain-your-bot-token) to get your token.
+3. Create a Pinecone account and get an API key.
+4. Create a Serper account and get an API key.
+
+## Installation
+1. Install Python using [pyenv](https://github.com/pyenv/pyenv-installer) or your prefered Python installation.
+2. Create a virtual environment: `python3 -m venv .venv`.
+3. Activate you virtual environment: `source .venv/bin/activate`.
+4. Install dependencies: `pip install -r requirements.txt`.
+5. [Install the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html).
+6. Install Docker in your system
+7. Install LocalStack using `pip install localstack`
+8. start LocalStack in a terminal/cmd window using `localstack start` (make sure docker is running in your system (check with `sudo docker images -a`))
+9. makesure localstack is running on port 4566
+10. If you are on Mac/ Linux, Open Terminal. If you are using Windows, open PowerShell and execute the below command
+11.
+```
+$ aws configure
+AWS Access Key ID [None]: test
+AWS Secret Access Key [None]: test
+Default region name [None]: us-east-1
+Default output format [None]:
+```
+12. Create new private bucket using command `aws s3api create-bucket --bucket <private-bucket-name> --endpoint-url='http://localhost:4566'`
+13. Create new public bucket using command `aws s3api create-bucket --bucket <public-bucket-name> --endpoint-url='http://localhost:4566'`
+14. two buckets - one public used as storage for new bots created and one private used for storing global defaults.
+15. confirm created buckets using command `aws s3 ls --endpoint-url='http://localhost:4566'`
+16. Edit `.chalice/config.json` & `chalicelib/credentials.py` and stablish the configurations:
 - `OPENAI_API_KEY` with the value of your Open AI API Token.
 - `S3_BUCKET`: with the bucket name you created previously.
 - `S3_PRIVATE_BUCKET`: with the other bucket name,
 - `SERPER_API_KEY`: with your Serper API key,
 - `PINECONE_API_KEY`: with your Pinecone API key,
 - `PINECONE_ENVIRONMENT` with your Pinecone environment.
-- `MAIN_MOD_USERNAME` with the telegram username of the user you want to be the main moderator of the bot.
-- `MAIN_MOD_ID` with the telegram id of the user you want to be the main moderator of the bot.
-8. (optional) as an alternative to step 7, you can set the environment variables in github secrets and uncomment the code in `.github/workflows/main.yml` this will automatically setup and deploy your bot in AWS Lambda when you push to the main branch.
-
-## Installation
-1. Install Python using [pyenv](https://github.com/pyenv/pyenv-installer) or your prefered Python installation.
-2. Create a virtual environment: `python3 -m venv .venv`.
-3. Activate you virtual environment: `source .venv/bin/activate`.
-3. Install dependencies: `pip install -r requirements.txt`.
-4. [Install the AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) and [configure your credentials](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-quickstart.html).
+- `MAIN_BOT_NAME` with the *username* of your main bot. (without @)
+- `MAIN_MOD_USERNAME` with the telegram username of the user you want to be the main moderator of the bot. (without @) (you can find your telegram username using @userinfobot in telegram)
+- `MAIN_MOD_ID` with the telegram id of the user you want to be the main moderator of the bot. (you can find your telegram id using @userinfobot in telegram)
 
 ## Deployment
-0. store defaults in the s3 private bucket by running `python scripts/register_defaults_in_s3.py`.
-1. Run `chalice deploy`.
-2. Go to the AWS Console -> Lambda -> grouplang-dev-message-handler -> Configuration -> Function URL.
-3. Click Create Function URL and set Auth type to NONE.
-4. [Add layer](https://github.com/lambci/git-lambda-layer) to lambda function to allow the usage of `git` binaries. This is needed to index github repositories. (Currently needs to be done manually in the AWS console after `chalice deploy`). 
+1. store defaults in the s3 private bucket by running `python scripts/register_defaults_in_s3.py`.
+2. install local chalice using command `pip install chalice-local`
+3. Run `chalice-local deploy`. (takes time)
+4. Run `aws lambda create-function-url-config --function-name grouplang-dev-message-handler --auth-type NONE --endpoint-url='http://localhost:4566'`
 5. Copy the created function URL.
-6. run `python scripts/set_bot_webhook.py <YOUR_FUNCTION_URL> <YOUR_TELEGRAM_TOKEN>` to stablish your Telegram webhook to point to you AWS Lambda.
-7. run `python scripts/register_bot.py <YOUR_TELEGRAM_TOKEN>` to register your main bot in the private S3 bucket. 
-8. run `python scripts/register_lambda.py <YOUR_FUNCTION_NAME> <YOUR_FUNCTION_URL>` to register your lambda function in s3 (will be used to set the webhooks of community bots programatically.
+6. Run ` aws lambda publish-layer-version --layer-name git-layer --compatible-runtimes python3.8 --zip-file fileb://git-layer.zip --endpoint-url=http://localhost:4566 `
+7. Run `ngrok http <host:port>` (get host and port from created function url)
+  Example :
+  if function url is : http://h25w1l1o9k798d062saknvd1693tkjjk.lambda-url.us-east-1.localhost.localstack.cloud:4566/
+  ```
+  ngrok http h25w1l1o9k798d062saknvd1693tkjjk.lambda-url.us-east-1.localhost.localstack.cloud:4566
+  ```
+8. copy new function url provided by ngrok (https version)
+9. run `python scripts/set_bot_webhook.py <YOUR_FUNCTION_URL> <YOUR_TELEGRAM_TOKEN>` to stablish your Telegram webhook to point to you AWS Lambda. (telegram token generated by botfather)
+10. run `python scripts/register_bot.py <YOUR_TELEGRAM_TOKEN>` to register your main bot in the private S3 bucket. (telegram token generated by botfather)
+11. run `python scripts/register_lambda.py <YOUR_FUNCTION_NAME> <YOUR_FUNCTION_URL>` to register your lambda function in s3 (will be used to set the webhooks of community bots programatically.
 
 Now you can go an setup your bot & group in telegram!.
 

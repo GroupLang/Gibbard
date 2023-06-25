@@ -2,15 +2,16 @@ import boto3, json
 import os
 from telegram import Bot
 
+import sys
+sys.path.insert(0, os.getcwd())
+from chalicelib.credentials import PRIVATE_BUCKET as BUCKET
+
 AWS_REGION = "eu-west-1"
 ENDPOINT_URL = "http://localhost:4566"
 
 def register_bot(bot_id, bot_token):
     # s3 = boto3.client("s3")
     s3 = boto3.client("s3", region_name=AWS_REGION, endpoint_url=ENDPOINT_URL)
-
-    # get s3 private bucket name from env   
-    BUCKET = os.environ['S3_PRIVATE_BUCKET']
 
     # Construct the object key with the desired format
     object_key = "bots_id_to_token.json"
