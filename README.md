@@ -1,4 +1,4 @@
-# GroupLang
+# GroupLang Gibbard
 
 LLM-powered bot that can interact with groups of humans for varied collaborative activities. The current example use case is an agent that can rely on humans as experts in addition to using documents when answering user queries. 
 
