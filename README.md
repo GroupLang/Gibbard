@@ -1,5 +1,6 @@
-# GroupLang-non-aws
-LLM-powered telegram bot that can interact with groups of humans for varied collaborative activities. The current example use case is an agent that can rely on humans as experts in addition to using documents when answering user queries. 
+# GroupLang
+
+LLM-powered bot that can interact with groups of humans for varied collaborative activities. The current example use case is an agent that can rely on humans as experts in addition to using documents when answering user queries. 
 
 The running version of the bot is currently deployed in LocalStack Lambda and is built using [LangChain](https://python.langchain.com/en/latest/index.html) as an LLM-framework. But we are [migrating](#migration)
 
@@ -84,14 +85,12 @@ Default output format [None]:
 
 Now you can go an setup your bot & group in telegram!.
 
-# Migration
-We are currently migrating the hosting to [Modal](https://modal.com/) and replacing LangChain with [Guidance](https://github.com/microsoft/guidance). The main reasons are the following:
+# Migration to Guidance
+replacing LangChain with [Guidance](https://github.com/microsoft/guidance). The main reasons are the following:
 
 1. Although LangChain is nice to get started quickly, it is not [well suited](https://github.com/hwchase17/langchain/issues/1364#issuecomment-1560895510) for a serverless framework. Also due to its extremely nested design it is not easy to keep an intuitive overview of the prompts and parsers used by each agent. [Guidance](https://github.com/microsoft/guidance) solves this by representing programs as simple strings which allows to see all prompts at once.
-2. Modal is built explicitly for ML applications in mind, is very easy to setup and manage compared to AWS Lambda, and offersthe same instant feedback loop you have when you develop locally. 
 3. [Guidance](https://github.com/microsoft/guidance)'s [token healing](https://github.com/microsoft/guidance/blob/main/notebooks/art_of_prompt_design/prompt_boundaries_and_token_healing.ipynb) automatically deals with the uninteded consequences of greedy tokenizations used by most language models. 
 
-The migration process is taking place in the [switch_to_guidance](https://github.com/Sam1320/GroupLang/tree/switch_to_guidance) branch.
 
 # Next Steps
 - [x] Handle urls of repositories to load information in the knowledge base.
@@ -101,7 +100,10 @@ The migration process is taking place in the [switch_to_guidance](https://github
 - [ ] Index (bad answer, feedback) tuples to improve quality of answers overtime.
 - [ ] Use google api for search directly instead of serper api
 - [ ] Add timeout + exponential backoff when waiting for expert/moderator feedback.
-- [ ] Finish Guidance/Modal migration
+
+    
+- [ ]  Guidance migration
+      
 There is also a lot of additional functionality *already implemented* but currently not integrated. The corresponging code is currently commented out.
 ### WIP:
 - [ ] Creating tabular data from collections of free-form user messages.
