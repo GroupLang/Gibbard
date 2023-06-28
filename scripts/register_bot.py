@@ -4,6 +4,7 @@ from telegram import Bot
 
 import sys
 sys.path.insert(0, os.getcwd())
+
 from chalicelib.credentials import PRIVATE_BUCKET as BUCKET
 
 AWS_REGION = "eu-west-1"

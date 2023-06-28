@@ -1,13 +1,13 @@
-import boto3, json
+import os
+import sys
+import boto3
+import json
+from telegram import Bot
+from chalicelib.credentials import PRIVATE_BUCKET as BUCKET
+
+sys.path.insert(0, os.getcwd())
 AWS_PROFILE = 'localstack'
 boto3.setup_default_session(profile_name=AWS_PROFILE)
-
-import os
-from telegram import Bot
-
-import sys
-sys.path.insert(0, os.getcwd())
-from chalicelib.credentials import PRIVATE_BUCKET as BUCKET
 
 def register_lambda(lambda_name, url):
     AWS_REGION = "eu-west-1"

@@ -37,7 +37,7 @@ from chalicelib.credentials import APP_NAME, BUCKET, PRIVATE_BUCKET, PINECONE_AP
 
 app = Chalice(app_name=APP_NAME)
 app.debug = True
-# s3 = boto3.client("s3")
+
 AWS_REGION = "eu-west-1"
 ENDPOINT_URL = "http://localhost:4566"
 s3 = boto3.client("s3", region_name=AWS_REGION, endpoint_url=ENDPOINT_URL)
