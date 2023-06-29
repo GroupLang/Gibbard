@@ -1,3 +1,23 @@
+import pinecone
+from chalicelib.credentials import BUCKET, MAIN_MOD_USERNAME, PINECONE_API_KEY, PINECONE_ENV, MAIN_BOT_NAME
+from chalicelib.utils import (
+    add_expert, add_global_mod, add_moderator, add_tool, delete_pending_queries, deregister_bot, get_all_tools, get_community_members, get_config, get_default_config,
+    get_default_database, get_default_experts, get_default_methods, get_default_prompts, get_default_tools, get_experts, get_global_mods, get_main_chat_id, get_main_mod_id,
+    get_moderators, get_name_to_id_dict, get_pending_queries, get_plan, get_tools, get_user_prompt, register_bot, register_user, remove_global_mod, send_typing_action,
+    set_main_chat_id, store_object, update_action_with_feedback, update_chat_state)
+from git import Blob, Repo
+import os
+from langchain.text_splitter import CharacterTextSplitter, RecursiveCharacterTextSplitter, Language
+from langchain.schema import AgentAction, AgentFinish
+from langchain.docstore.document import Document
+from langchain.llms import OpenAI
+from langchain.chains import RetrievalQA
+from telegram.ext import CallbackContext
+from langchain.vectorstores import Pinecone
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.embeddings.openai import OpenAIEmbeddings
+from chalicelib.custom_objects import Query
+from telegram import ParseMode, Update, ChatAction
 from io import StringIO
 import traceback
 import io
@@ -7,51 +27,31 @@ import boto3
 AWS_PROFILE = 'localstack'
 boto3.setup_default_session(profile_name=AWS_PROFILE)
 
-from telegram import ParseMode, Update, ChatAction
-from chalicelib.custom_objects import Query
-from langchain.embeddings.openai import OpenAIEmbeddings
-from langchain.text_splitter import CharacterTextSplitter
-from langchain.vectorstores import Pinecone
-from telegram.ext import CallbackContext
-import pinecone 
-from langchain.chains import RetrievalQA
-from langchain.llms import OpenAI
-from langchain.docstore.document import Document
-from langchain.schema import AgentAction, AgentFinish
-from langchain.text_splitter import CharacterTextSplitter, RecursiveCharacterTextSplitter, Language
+import logging
+logging.basicConfig(level=logging.INFO)
 
-import os
 os.environ["GIT_PYTHON_REFRESH"] = "quiet"
-from git import Blob, Repo
-
-from chalicelib.utils import (
-    add_expert, add_global_mod, add_moderator, add_tool, delete_pending_queries, deregister_bot, get_all_tools, get_community_members, get_config, get_default_config, 
-    get_default_database, get_default_experts, get_default_methods, get_default_prompts, get_default_tools, get_experts, get_global_mods, get_main_chat_id, get_main_mod_id, 
-    get_moderators, get_name_to_id_dict, get_pending_queries, get_plan, get_tools, get_user_prompt,register_bot, register_user, remove_global_mod, send_typing_action, 
-    set_main_chat_id, store_object, update_action_with_feedback, update_chat_state)
-from chalicelib.credentials import BUCKET, MAIN_MOD_USERNAME, PINECONE_API_KEY, PINECONE_ENV, MAIN_BOT_NAME
-
 
 
 # s3 = boto3.client("s3")
-AWS_REGION = "eu-west-1"
+AWS_REGION = "us-east-1"
 ENDPOINT_URL = "http://localhost:4566"
 s3 = boto3.client("s3", region_name=AWS_REGION, endpoint_url=ENDPOINT_URL)
 
 # user commands
-user_commands_list  = [
+user_commands_list = [
     "*User commands:*",
     "/start - to get this message again and see the current settings",
     "/reset - to reset all of your stored messages",
     "/query - to ask a question",
     "/answer - to answer a question",
     "/help - to see all available commands",
-    ]
+]
 
 # moderator commands
-moderator_commands_list  = [
+moderator_commands_list = [
     "*Moderator commands:*",
-    "/set\_user\_prompt <user prompt> - to set the first message shown to users.", 
+    "/set\_user\_prompt <user prompt> - to set the first message shown to users.",
     "/add\_moderator <username> - to add a moderator",
     "/add\_expert <username> <description> - to add an expert",
     "/add\_tool <tool name> <description> - to add a tool",
@@ -65,7 +65,7 @@ moderator_commands_list  = [
     "/deregister\_bot - to DELETE ALL DATA and deregister this bot",
     "\n",
     '\n'.join(user_commands_list)
-    ]
+]
 
 
 # # Adds moderator to the list of moderators
@@ -79,7 +79,8 @@ def cmd_add_moderator(update, context, moderator=None):
         # check if user provided a moderator
         if moderator == None:
             if len(context.args) == 0:
-                context.bot.send_message(chat_id=chat_id, text="Please provide a moderator.", parse_mode=ParseMode.MARKDOWN,)
+                context.bot.send_message(
+                    chat_id=chat_id, text="Please provide a moderator.", parse_mode=ParseMode.MARKDOWN,)
                 return
 
             # add moderator
@@ -88,65 +89,81 @@ def cmd_add_moderator(update, context, moderator=None):
         # strip @ if present
         if moderator[0] == "@":
             moderator = moderator[1:]
-        
+
         # check if user is a member of the community
         name_to_id = get_name_to_id_dict(bot_username)
         if moderator not in name_to_id.keys():
-            context.bot.send_message(chat_id=chat_id, text=f"{moderator} is not a member of the community.")
+            context.bot.send_message(
+                chat_id=chat_id, text=f"{moderator} is not a member of the community.")
             return
-    
+
         add_moderator(bot_username=bot_username, moderator=moderator)
-        context.bot.send_message(chat_id=chat_id, text=f"Added {moderator} as a moderator.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Added {moderator} as a moderator.")
     else:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry, you are not a moderator.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry, you are not a moderator.")
+
 
 def cmd_add_global_moderator(update, context, moderator=None):
     chat_id = update.message.chat_id
     username = update.message.from_user.username
     bot_username = context.bot.get_me().username
     if username != MAIN_MOD_USERNAME:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry, only the main moderator {MAIN_MOD_USERNAME} can add global moderators.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry, only the main moderator {MAIN_MOD_USERNAME} can add global moderators.")
         return
-    
+
     if moderator == None:
         if len(context.args) == 0:
-            context.bot.send_message(chat_id=chat_id, text="Please provide a moderator.", parse_mode=ParseMode.MARKDOWN,)
+            context.bot.send_message(
+                chat_id=chat_id, text="Please provide a moderator.", parse_mode=ParseMode.MARKDOWN,)
             return
         # add moderator
         moderator = context.args[0]
 
     add_global_mod(moderator)
-    context.bot.send_message(chat_id=chat_id, text=f"Added {moderator} as a global moderator.")
-    
+    context.bot.send_message(
+        chat_id=chat_id, text=f"Added {moderator} as a global moderator.")
+
+
 def cmd_remove_global_moderator(update, context, moderator=None):
     chat_id = update.message.chat_id
     username = update.message.from_user.username
     bot_username = context.bot.get_me().username
     if username != MAIN_MOD_USERNAME:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry, only the main moderator {MAIN_MOD_USERNAME} can remove global moderators.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry, only the main moderator {MAIN_MOD_USERNAME} can remove global moderators.")
         return
-    
+
     if moderator == None:
         if len(context.args) == 0:
-            context.bot.send_message(chat_id=chat_id, text="Please provide a moderator.", parse_mode=ParseMode.MARKDOWN,)
+            context.bot.send_message(
+                chat_id=chat_id, text="Please provide a moderator.", parse_mode=ParseMode.MARKDOWN,)
             return
         # add moderator
         moderator = context.args[0]
 
     remove_global_mod(moderator)
-    context.bot.send_message(chat_id=chat_id, text=f"Removed {moderator} as a global moderator.")
+    context.bot.send_message(
+        chat_id=chat_id, text=f"Removed {moderator} as a global moderator.")
+
 
 def cmd_show_global_moderators(update, context):
     chat_id = update.message.chat_id
     username = update.message.from_user.username
     if username != MAIN_MOD_USERNAME:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry, only the main moderator {MAIN_MOD_USERNAME} can see global moderators.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry, only the main moderator {MAIN_MOD_USERNAME} can see global moderators.")
         return
-        
+
     global_mods = get_global_mods()
-    context.bot.send_message(chat_id=chat_id, text=f"Global moderators: {', '.join(global_mods)}")
+    context.bot.send_message(
+        chat_id=chat_id, text=f"Global moderators: {', '.join(global_mods)}")
 
 # # add expert
+
+
 def cmd_add_expert(update, context, **kwargs):
     chat_id = update.message.chat_id
     username = update.message.from_user.username
@@ -159,30 +176,38 @@ def cmd_add_expert(update, context, **kwargs):
         else:
             # check if format is correct /add_expert  expert_description
             if len(context.args) < 2:
-                context.bot.send_message(chat_id=chat_id, text=f"Sorry, the format is incorrect. Please use /add_expert <username> <description>")
+                context.bot.send_message(
+                    chat_id=chat_id, text=f"Sorry, the format is incorrect. Please use /add_expert <username> <description>")
                 return
             # get relevant variables
             expert_name = context.args[0]
             expert_description = ' '.join(context.args[1:])
 
-        experts_names = [expert['name'] for expert in  get_experts(bot_username)]
+        experts_names = [expert['name']
+                         for expert in get_experts(bot_username)]
         community_members = get_community_members(bot_username)
 
         # strip @ if present
         if expert_name[0] == "@":
             expert_name = expert_name[1:]
-        
+
         # check if user is a member of the community
         if expert_name not in community_members:
-            context.bot.send_message(chat_id=chat_id, text=f"Sorry {expert_name} is not a member of the community. You need to write a message directly to the community bot first.")
+            context.bot.send_message(
+                chat_id=chat_id, text=f"Sorry {expert_name} is not a member of the community. You need to write a message directly to the community bot first.")
             return
 
-        add_expert(name=expert_name, description=expert_description, community=bot_username)
-        context.bot.send_message(chat_id=chat_id, text=f"Ok, expert added!. \nName: {expert_name} \nDescription: {expert_description}")
+        add_expert(name=expert_name, description=expert_description,
+                   community=bot_username)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Ok, expert added!. \nName: {expert_name} \nDescription: {expert_description}")
     else:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry, you are not a moderator.", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry, you are not a moderator.", parse_mode=ParseMode.MARKDOWN,)
 
 # add tool
+
+
 def cmd_add_tool(update, context, **kwargs):
     chat_id = update.message.chat_id
     username = update.message.from_user.username
@@ -195,42 +220,55 @@ def cmd_add_tool(update, context, **kwargs):
         else:
             # check if format is correct /add_tool  tool_description
             if len(context.args) < 2:
-                context.bot.send_message(chat_id=chat_id, text=f"Sorry, the format is incorrect. Please use /add_tool <name> <description>")
+                context.bot.send_message(
+                    chat_id=chat_id, text=f"Sorry, the format is incorrect. Please use /add_tool <name> <description>")
                 return
             # get relevant variables
             tool_name = context.args[0]
             tool_description = ' '.join(context.args[1:])
 
-        tools_names = [tool['name'] for tool in  get_tools(bot_username)]
+        tools_names = [tool['name'] for tool in get_tools(bot_username)]
 
         # strip @ if present
         if tool_name[0] == "@":
             tool_name = tool_name[1:]
-        
+
         # check if tool is already avaiable
         elif tool_name in tools_names:
-            context.bot.send_message(chat_id=chat_id, text=f"{tool_name} is already a tool.")
+            context.bot.send_message(
+                chat_id=chat_id, text=f"{tool_name} is already a tool.")
             return
 
-        add_tool(name=tool_name, description=tool_description, community=bot_username)
-        context.bot.send_message(chat_id=chat_id, text=f"Sure!, I added {tool_name} as a tool.")
+        add_tool(name=tool_name, description=tool_description,
+                 community=bot_username)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sure!, I added {tool_name} as a tool.")
     else:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry, you are not a moderator.", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry, you are not a moderator.", parse_mode=ParseMode.MARKDOWN,)
 
 # Shows  all available commands to user
+
+
 def cmd_help(update, context):
     bot_username = context.bot.get_me().username
     chat_id = update.message.chat_id
     username = update.message.from_user.username
     # check if moderator
     if username in get_moderators(bot_username):
-        context.bot.send_message(chat_id=chat_id, text='\n'.join(moderator_commands_list) + "\n", parse_mode=ParseMode.MARKDOWN,)  
-        context.bot.send_message(chat_id=chat_id, text="You can also just tell me what you want and I'll try to figure out which command you want to use.")
+        context.bot.send_message(chat_id=chat_id, text='\n'.join(
+            moderator_commands_list) + "\n", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text="You can also just tell me what you want and I'll try to figure out which command you want to use.")
     else:
-        context.bot.send_message(chat_id=chat_id, text='\n'.join(user_commands_list) + "\n", parse_mode=ParseMode.MARKDOWN,)
-        context.bot.send_message(chat_id=chat_id, text="You can also just tell me what you want and I'll try to figure out which command you want to use.")
+        context.bot.send_message(chat_id=chat_id, text='\n'.join(
+            user_commands_list) + "\n", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text="You can also just tell me what you want and I'll try to figure out which command you want to use.")
 
-# gets the username from the message and description and runs the add_expert command 
+# gets the username from the message and description and runs the add_expert command
+
+
 def cmd_introduce(update, context, description=None):
     chat_id = update.message.chat_id
     username = update.message.from_user.username
@@ -241,13 +279,18 @@ def cmd_introduce(update, context, description=None):
             description = ' '.join(context.args)
         else:
             description = description
-        add_expert(name=username, description=description, community=bot_username)
-        context.bot.send_message(chat_id=chat_id, text=f"Added expert. \nName: {username} \nDescription: {description}")
-        
+        add_expert(name=username, description=description,
+                   community=bot_username)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Added expert. \nName: {username} \nDescription: {description}")
+
     else:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry, you are not a moderator.", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry, you are not a moderator.", parse_mode=ParseMode.MARKDOWN,)
 
 # Resets the default settings of the community (prompts and methods)
+
+
 def cmd_reset_defaults(update, context):
     chat_id = update.message.chat_id
     username = update.message.from_user.username
@@ -255,11 +298,12 @@ def cmd_reset_defaults(update, context):
     moderators_key = f"{bot_username}/moderators"
 
     # get moderators
-    response = s3.get_object(Bucket=BUCKET, Key=moderators_key)        
+    response = s3.get_object(Bucket=BUCKET, Key=moderators_key)
     moderators = json.loads(response['Body'].read().decode('utf-8'))
 
     if (username == MAIN_MOD_USERNAME or username in moderators):
-        context.bot.send_message(chat_id=chat_id, text=f"Hey {username}. Ok, I will reset the default settings of this community", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Hey {username}. Ok, I will reset the default settings of this community", parse_mode=ParseMode.MARKDOWN,)
         # get default prompts from s3 PRIVATE_BUCKET
         prompts = get_default_prompts()
 
@@ -283,17 +327,26 @@ def cmd_reset_defaults(update, context):
         config = get_default_config()
 
         # set default settings
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/methods.json", Body=json.dumps(methods))
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/prompts.json", Body=json.dumps(prompts))
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/database.csv", Body=csv_buffer.getvalue())
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/experts.json", Body=json.dumps(experts))
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/tools.json", Body=json.dumps(tools))
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
-        store_object(obj=pending_queries, name="pending_queries", community=bot_username)
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/methods.json", Body=json.dumps(methods))
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/prompts.json", Body=json.dumps(prompts))
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/database.csv", Body=csv_buffer.getvalue())
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/experts.json", Body=json.dumps(experts))
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/tools.json", Body=json.dumps(tools))
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
+        store_object(obj=pending_queries, name="pending_queries",
+                     community=bot_username)
 
-        context.bot.send_message(chat_id=chat_id, text=f"Done!", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Done!", parse_mode=ParseMode.MARKDOWN,)
     else:
-        context.bot.send_message(chat_id=chat_id, text=f"Hey {username}. You are not allowed to reset the default settings of this community", parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Hey {username}. You are not allowed to reset the default settings of this community", parse_mode=ParseMode.MARKDOWN,)
 
 
 # Shows defaults and initial instructions (depends on the role of the user)
@@ -304,30 +357,35 @@ def cmd_start(update, context):
     user_id = update.message.from_user.id
 
     if not MAIN_BOT_NAME:
-        raise Exception("looks like you haven't set the MAIN_BOT_NAME variable")
-    
+        raise Exception(
+            "looks like you haven't set the MAIN_BOT_NAME variable")
 
     # check if main bot
     if bot_username == MAIN_BOT_NAME:
         text_1 = """Hey there. Send the /newbot command to https://t.me/botfather to create your bot. Once you have the bot's token, send it to me in the following format /token <bot's token>."""
         text_2 = " If you want your bot to be able to read the messages once added to a group then you need to disable 'Group Privacy' by sending the /mybots command to https://t.me/botfather then selecting your bot > 'Bot Settings' > 'Group Privacy' > 'Turn off'."
-        context.bot.send_message(chat_id=chat_id, text=text_1.replace("\n", "").replace("\t", ""), parse_mode=ParseMode.MARKDOWN,)  
-        context.bot.send_message(chat_id=chat_id, text=text_2.replace("\n", "").replace("\t", ""), parse_mode=ParseMode.MARKDOWN,)
-        return 
-    
+        context.bot.send_message(chat_id=chat_id, text=text_1.replace(
+            "\n", "").replace("\t", ""), parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(chat_id=chat_id, text=text_2.replace(
+            "\n", "").replace("\t", ""), parse_mode=ParseMode.MARKDOWN,)
+        return
 
     # register user if not already registered
     community_members = get_community_members(bot_username)
     if username not in community_members:
         register_user(bot_username, user_id=user_id, username=username)
-        context.bot.send_message(chat_id=chat_id, text=f"You have been registered {username}. Welcome to the community!")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"You have been registered {username}. Welcome to the community!")
     try:
         user_prompt = get_config(bot_username)['prompts']['user']
     except Exception as e:
         print(f"Error getting user prompt: {e}")
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry there was an error, please report it to the moderators.")
+        logging.info(f"Error getting user prompt: {e}")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry there was an error, please report it to the moderators.")
     # user_prompt = get_user_prompt(bot_username)
-    context.bot.send_message(chat_id=chat_id, text=user_prompt, parse_mode=ParseMode.MARKDOWN,)  
+    context.bot.send_message(
+        chat_id=chat_id, text=user_prompt, parse_mode=ParseMode.MARKDOWN,)
 
 
 # # Deregisters a bot
@@ -338,18 +396,23 @@ def cmd_deregister_bot(update, context):
     # check if main bot
     if bot_username == MAIN_BOT_NAME:
         text_1 = "You can't deregister the main bot."
-        context.bot.send_message(chat_id=chat_id, text=text_1, parse_mode=ParseMode.MARKDOWN,)  
-        return 
+        context.bot.send_message(
+            chat_id=chat_id, text=text_1, parse_mode=ParseMode.MARKDOWN,)
+        return
     # check if moderator
     moderators = get_moderators(bot_username)
     if (username == MAIN_MOD_USERNAME or username in moderators):
-        context.bot.send_message(chat_id=chat_id, text="Bot deregistered successfully! ALL data has been deleted and you can no longer talk to me :/.", parse_mode=ParseMode.MARKDOWN,)  
+        context.bot.send_message(
+            chat_id=chat_id, text="Bot deregistered successfully! ALL data has been deleted and you can no longer talk to me :/.", parse_mode=ParseMode.MARKDOWN,)
         deregister_bot(bot_username)
     else:
         text_1 = "You don't have permission to deregister this bot."
-        context.bot.send_message(chat_id=chat_id, text=text_1, parse_mode=ParseMode.MARKDOWN,)
+        context.bot.send_message(
+            chat_id=chat_id, text=text_1, parse_mode=ParseMode.MARKDOWN,)
 
 # Registers a new bot
+
+
 @send_typing_action
 def cmd_token(update, context, token=None):
     bot_username = context.bot.get_me().username
@@ -360,27 +423,31 @@ def cmd_token(update, context, token=None):
         token = ' '.join(context.args)
     else:
         token = token
-    
+
     global_mods = get_global_mods()
 
     # check if main bot
     if bot_username == MAIN_BOT_NAME:
         if username != MAIN_MOD_USERNAME and username not in global_mods:
-            context.bot.send_message(chat_id=chat_id, text="Sorry, you don't have permission to register a bot.")
+            context.bot.send_message(
+                chat_id=chat_id, text="Sorry, you don't have permission to register a bot.")
             return
         if token:
             try:
-                bot_username = register_bot(bot_token=token, moderator=username, main_chat_id=chat_id)
+                bot_username = register_bot(
+                    bot_token=token, moderator=username, main_chat_id=chat_id)
             except Exception as e:
                 print("Error registering bot: ", e)
+                logging.info("Error registering bot: ", e)
                 print(traceback.format_exc())
-                context.bot.send_message(chat_id=chat_id, text="Bot could not be registered. Please check your token and command format and try again.")        
+                context.bot.send_message(
+                    chat_id=chat_id, text="Bot could not be registered. Please check your token and command format and try again.")
             else:
                 # get bot username
                 # prefix any underscores in bots name with a backslash
                 bot_username_ = bot_username.replace("_", "\_")
                 text_2 = f"Bot registered successfully!. As the first member you are a moderator and can now go setup your community by sending the `/start` command to t.me/{bot_username_} and have a one-to-one chat with the bot."
-                # 
+                #
                 create_group_instructions_list = [
                     "iOS: Start a new message (tap the icon in the top right corner in Chats) > 'New Group'.",
                     "Android: Tap the circular pencil icon in the chat list > 'New Group'.",
@@ -389,7 +456,7 @@ def cmd_token(update, context, token=None):
                     f"go to t.me/{bot_username}, click the bot's icon in the top bar and then click 'Add to Group or Channel, then select your group and click 'Add bot as a Member'.\n",
                     "You can also add the bot by going in the group, clicking the group's name in the top bar and then clicking 'Add Members', then search for the bot and click 'Add'.\n",
                     "After you have added the bot promote it to admin by going into the group, clicking the group's name in the top bar, pressing the bot's name and then clicking 'Promote to Admin'.\n"
-                    ]
+                ]
                 text_3 = [
                     "You can also create a group by following these instructions:",
                     '\n'.join(create_group_instructions_list),
@@ -400,24 +467,31 @@ def cmd_token(update, context, token=None):
 
                 # main_mod_id = int(get_main_mod_id())
                 # context.bot.send_message(chat_id=main_mod_id, text=f"New bot {bot_username_} registered by {username}.", parse_mode=ParseMode.MARKDOWN,)
-                context.bot.send_message(chat_id=chat_id, text=text_2, parse_mode=ParseMode.MARKDOWN,) 
-                context.bot.send_message(chat_id=chat_id, text='\n'.join(text_3)) 
+                context.bot.send_message(
+                    chat_id=chat_id, text=text_2, parse_mode=ParseMode.MARKDOWN,)
+                context.bot.send_message(
+                    chat_id=chat_id, text='\n'.join(text_3))
         else:
-            context.bot.send_message(chat_id=chat_id, text="Did not find your token. Please use the format: /token <bot's token>", parse_mode=ParseMode.MARKDOWN,) 
+            context.bot.send_message(
+                chat_id=chat_id, text="Did not find your token. Please use the format: /token <bot's token>", parse_mode=ParseMode.MARKDOWN,)
     else:
-        context.bot.send_message(chat_id=chat_id, text="New bots can only be registered by the main bot.")
+        context.bot.send_message(
+            chat_id=chat_id, text="New bots can only be registered by the main bot.")
 
 # show current tools to user
+
+
 def cmd_show_tools(update, context):
     bot_username = context.bot.get_me().username
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
-    # get tools 
+    # get tools
     # tools = get_tools(bot_username)
     tools = get_all_tools(bot_username,)
     # if no tools, send message
     if not tools:
-        context.bot.send_message(chat_id=chat_id, text="No tools found. Please ask a moderator to add some first.")
+        context.bot.send_message(
+            chat_id=chat_id, text="No tools found. Please ask a moderator to add some first.")
         return
     # send experts
     text = "The following tools are available: \n"
@@ -428,15 +502,18 @@ def cmd_show_tools(update, context):
     context.bot.send_message(chat_id=chat_id, text=text)
 
 # show current experts to user
+
+
 def cmd_show_experts(update, context):
     bot_username = context.bot.get_me().username
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
-    # get experts 
+    # get experts
     experts = get_experts(bot_username)
     # if no experts, send message
     if not experts:
-        context.bot.send_message(chat_id=chat_id, text="No experts found. Please ask a moderator to add some first.")
+        context.bot.send_message(
+            chat_id=chat_id, text="No experts found. Please ask a moderator to add some first.")
         return
     # send experts
     text = "The following experts are available: \n"
@@ -445,15 +522,18 @@ def cmd_show_experts(update, context):
     context.bot.send_message(chat_id=chat_id, text=text)
 
 # show pending queries
+
+
 def cmd_show_pending_queries(update, context):
     bot_username = context.bot.get_me().username
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
-    # get pending queries 
+    # get pending queries
     queries = get_pending_queries(bot_username)
     # if no queries, send message
     if not queries:
-        context.bot.send_message(chat_id=chat_id, text="No pending queries found.")
+        context.bot.send_message(
+            chat_id=chat_id, text="No pending queries found.")
         return
     # send queries
     text = "The following queries are pending: \n"
@@ -461,19 +541,22 @@ def cmd_show_pending_queries(update, context):
         text += f"query client :{query.client_username}. expert asked: {query.expert_username}. query: {query.query_text}\n"
     context.bot.send_message(chat_id=chat_id, text=text)
 
+
 def cmd_delete_pending_queries(update, context):
     bot_username = context.bot.get_me().username
     chat_id = update.message.chat_id
     user_id = update.message.from_user.id
-    # get pending queries 
+    # get pending queries
     queries = get_pending_queries(bot_username)
     # if no queries, send message
     if not queries:
-        context.bot.send_message(chat_id=chat_id, text="No pending queries found.")
+        context.bot.send_message(
+            chat_id=chat_id, text="No pending queries found.")
         return
     # delete queries
     delete_pending_queries(bot_username)
     context.bot.send_message(chat_id=chat_id, text="Pending queries deleted.")
+
 
 def ask_expert(query, context, update, get_feedback=False):
     bot_username = context.bot.username
@@ -488,7 +571,8 @@ def ask_expert(query, context, update, get_feedback=False):
         # check if expert is already helping someone else
         if query.expert_id in pending_queries:
             return False
-        if query.expert_username == query.client_username: # the client is the expert of the meaning of the query
+        # the client is the expert of the meaning of the query
+        if query.expert_username == query.client_username:
             # ask clarification question
             message = f"{query.last_action.tool_input}"
             chat_state = "waiting_for_clarification"
@@ -496,10 +580,10 @@ def ask_expert(query, context, update, get_feedback=False):
             message = f"Hello {query.expert_username}, I need your help with this question: \n *{query.last_action.tool_input}*"
             chat_state = "waiting_for_answer"
 
-
     # ask expert for help
-    try: # TODO: remove this try catch as it seems unecessary
-        chat_id = int(query.moderator_id) if get_feedback else int(query.expert_id)
+    try:  # TODO: remove this try catch as it seems unecessary
+        chat_id = int(query.moderator_id) if get_feedback else int(
+            query.expert_id)
         context.bot.send_message(chat_id=chat_id, text=message)
         update_chat_state(bot_username, chat_id, chat_state)
 
@@ -507,25 +591,27 @@ def ask_expert(query, context, update, get_feedback=False):
         chat_id = update.message.chat_id
         context.bot.send_message(chat_id=chat_id, text=f"Error: {e}")
         return False
-        
+
     # add query to pending queries and save
     pending_queries[chat_id] = query
-    store_object(obj=pending_queries, name="pending_queries", community=bot_username)
+    store_object(obj=pending_queries, name="pending_queries",
+                 community=bot_username)
 
     return True
+
 
 @send_typing_action
 def cmd_query(update, context, query=None):
     bot_username = context.bot.get_me().username
     chat_id = update.message.chat_id
-    username = update.message.from_user.username # change for group name
+    username = update.message.from_user.username  # change for group name
 
     # check if callback handler or bot command
     if query is None:
         query_text = ' '.join(context.args)
     else:
         query_text = query
-    
+
     moderator_id = get_main_chat_id(bot_username)
 
     # get plan
@@ -534,13 +620,16 @@ def cmd_query(update, context, query=None):
     except Exception as e:
         context.bot.send_message(chat_id=moderator_id, text=f"Error: {e}")
         return
-    context.bot.send_message(chat_id=chat_id, text=f"Ok, I'll try to answer your question. It might take a while since I have to do some research and maybe verify with experts. I'll let you know when I'm done :).")
+    context.bot.send_message(
+        chat_id=chat_id, text=f"Ok, I'll try to answer your question. It might take a while since I have to do some research and maybe verify with experts. I'll let you know when I'm done :).")
 
     # create query object
-    query = Query(client_username=username, client_id=chat_id, query_text=query_text, last_action=action, moderator_id=moderator_id)
+    query = Query(client_username=username, client_id=chat_id,
+                  query_text=query_text, last_action=action, moderator_id=moderator_id)
     debug = True if get_config(bot_username)['debug'] == 'yes' else False
     if debug:
-        context.bot.send_message(chat_id=query.moderator_id, text=f"I've just received the query \n'''{query.query_text}'''\nfrom @{query.client_username} and I'm going to try to answer it.\nSince debug mode is enabled I'll log all of my chain of thought here.")
+        context.bot.send_message(
+            chat_id=query.moderator_id, text=f"I've just received the query \n'''{query.query_text}'''\nfrom @{query.client_username} and I'm going to try to answer it.\nSince debug mode is enabled I'll log all of my chain of thought here.")
         context.bot.send_message(chat_id=query.moderator_id, text=action.log)
 
     query_loop(update, context, query)
@@ -551,9 +640,10 @@ def query_loop(update, context, query):
     chat_id = update.message.chat_id
     name_to_id = get_name_to_id_dict(bot_username)
     # TODO: intergate update below better.
-    # update the id of the asking user to be the id of the chat in which the question was made (to avoid bot asking for clarification in private chat when user asked question in a group chat) 
-    name_to_id.update({query.client_username : query.client_id}) 
-    experts = get_experts(bot_username) #TODO: add original client as an expert
+    # update the id of the asking user to be the id of the chat in which the question was made (to avoid bot asking for clarification in private chat when user asked question in a group chat)
+    name_to_id.update({query.client_username: query.client_id})
+    # TODO: add original client as an expert
+    experts = get_experts(bot_username)
     tools = get_all_tools(bot_username, client_username=query.client_username)
     name_to_tool_map = {tool.name: tool for tool in tools}
     iterations = 0
@@ -561,10 +651,10 @@ def query_loop(update, context, query):
     action = query.last_action
     debug = True if get_config(bot_username)['debug'] == 'yes' else False
 
-
     if len(tools) == 0:
-        context.bot.send_message(chat_id=chat_id, text="There are no tools or experts available. Please ask a moderator to add some experts or tools.")
-        return   
+        context.bot.send_message(
+            chat_id=chat_id, text="There are no tools or experts available. Please ask a moderator to add some experts or tools.")
+        return
     while isinstance(action, AgentAction) and (action.tool in [tool.name for tool in tools]) and iterations < max_iterations:
         iterations += 1
         # check if tool is a human expert
@@ -573,46 +663,58 @@ def query_loop(update, context, query):
             try:
                 expert_id = name_to_id[action.tool]
             except KeyError:
-                context.bot.send_message(chat_id=chat_id, text=f"Could not find expert {action.tool}")
+                context.bot.send_message(
+                    chat_id=chat_id, text=f"Could not find expert {action.tool}")
                 return
             query.expert_id = expert_id
             query.expert_username = action.tool
             question_sent = ask_expert(query, context, update=update)
             if question_sent:
                 if query.expert_id != chat_id:
-                    context.bot.send_message(chat_id=query.client_id, text=f"Ok, I've asked an expert for help. It can take some time for them to respond. I'll let you know when they do.")
+                    context.bot.send_message(
+                        chat_id=query.client_id, text=f"Ok, I've asked an expert for help. It can take some time for them to respond. I'll let you know when they do.")
                 return
             else:
                 observation = f'Expert {query.expert_username} is already helping someone else.'
                 if debug:
-                    context.bot.send_message(chat_id=query.moderator_id, text=f'Observation: {observation}')
-                query.intermediate_steps.append((query.last_action, observation))
+                    context.bot.send_message(
+                        chat_id=query.moderator_id, text=f'Observation: {observation}')
+                query.intermediate_steps.append(
+                    (query.last_action, observation))
                 try:
-                    action = get_plan(bot_username=bot_username, query_text=query.query_text, username=query.client_username, intermediate_steps=query.intermediate_steps)
+                    action = get_plan(bot_username=bot_username, query_text=query.query_text,
+                                      username=query.client_username, intermediate_steps=query.intermediate_steps)
                 except Exception as e:
-                    context.bot.send_message(chat_id=chat_id, text=f"Error: {e}")
+                    context.bot.send_message(
+                        chat_id=chat_id, text=f"Error: {e}")
                     return
                 query.last_action = action
                 if debug:
                     # send observaion to user
-                    context.bot.send_message(chat_id=query.moderator_id, text=f'Observation: {observation} \n Thought: {action.log}')
+                    context.bot.send_message(
+                        chat_id=query.moderator_id, text=f'Observation: {observation} \n Thought: {action.log}')
         else:
             # run tool
             tool = name_to_tool_map[action.tool]
             tool_input = action.tool_input
             observation = tool.run(tool_input)
             if debug:
-                context.bot.send_message(chat_id=query.moderator_id, text=f"Observation: {observation}")
+                context.bot.send_message(
+                    chat_id=query.moderator_id, text=f"Observation: {observation}")
             query.intermediate_steps.append((query.last_action, observation))
             try:
-                action = get_plan(bot_username=bot_username, query_text=query.query_text, username=query.client_username, intermediate_steps=query.intermediate_steps)
+                action = get_plan(bot_username=bot_username, query_text=query.query_text,
+                                  username=query.client_username, intermediate_steps=query.intermediate_steps)
             except Exception as e:
-                context.bot.send_message(chat_id=query.client_id, text="Sorry, I couldn't find a solution to your problem. Please try again later or ask the moderators for help :(.")
-                context.bot.send_message(chat_id=query.moderator_id, text=f"Error: {e}")
+                context.bot.send_message(
+                    chat_id=query.client_id, text="Sorry, I couldn't find a solution to your problem. Please try again later or ask the moderators for help :(.")
+                context.bot.send_message(
+                    chat_id=query.moderator_id, text=f"Error: {e}")
                 return
             query.last_action = action
             if debug:
-                context.bot.send_message(chat_id=query.moderator_id, text=f'Thought: {action.log}')
+                context.bot.send_message(
+                    chat_id=query.moderator_id, text=f'Thought: {action.log}')
 
     if isinstance(action, AgentFinish):
         query.final_answer = action.return_values['output']
@@ -622,24 +724,32 @@ def query_loop(update, context, query):
             query.needs_feedback = True
         if query.needs_feedback:
             # verification if final makes sense
-            asked_for_feedback = ask_expert(query, context, update=update, get_feedback=True)
+            asked_for_feedback = ask_expert(
+                query, context, update=update, get_feedback=True)
             if not asked_for_feedback:
-                context.bot.send_message(chat_id=query.client_id, text="Sorry, there was an error. Please try again later or ask the moderators for help :(.")
-                context.bot.send_message(chat_id=query.moderator_id, text="There was an error asking for feedback on the final answer.")
+                context.bot.send_message(
+                    chat_id=query.client_id, text="Sorry, there was an error. Please try again later or ask the moderators for help :(.")
+                context.bot.send_message(
+                    chat_id=query.moderator_id, text="There was an error asking for feedback on the final answer.")
         else:
-            context.bot.send_message(chat_id=query.client_id, text=query.final_answer)
-            debug = True if get_config(bot_username)['debug'] == 'yes' else False
+            context.bot.send_message(
+                chat_id=query.client_id, text=query.final_answer)
+            debug = True if get_config(bot_username)[
+                'debug'] == 'yes' else False
             if debug:
-                context.bot.send_message(chat_id=query.moderator_id, text="Ok, I've sent the final answer to the user.")
+                context.bot.send_message(
+                    chat_id=query.moderator_id, text="Ok, I've sent the final answer to the user.")
 
         return
     elif iterations >= max_iterations:
-        context.bot.send_message(chat_id=chat_id, text=f"Max iterations reached.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Max iterations reached.")
         return
     else:
-        context.bot.send_message(chat_id=chat_id, text=f"Unexpected tool: {action.tool}")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Unexpected tool: {action.tool}")
         return
-    
+
 
 @send_typing_action
 def cmd_answer(update, context, answer=None):
@@ -647,75 +757,92 @@ def cmd_answer(update, context, answer=None):
     chat_id = update.message.chat_id
     pending_queries = get_pending_queries(bot_username=bot_username)
     expert_id = chat_id
-    
-    update_chat_state(bot_username=bot_username, chat_id=chat_id, chat_state="normal")
-    # check if callback handler or if the command was routed by the bot 
+
+    update_chat_state(bot_username=bot_username,
+                      chat_id=chat_id, chat_state="normal")
+    # check if callback handler or if the command was routed by the bot
     if answer is None:
         observation = ' '.join(context.args)
     else:
         observation = answer
-    
+
     # check if answer is for a pending query
     if expert_id not in pending_queries:
-        context.bot.send_message(chat_id=chat_id, text=f"Sorry but there are no pending queries for you.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Sorry but there are no pending queries for you.")
         return
-    
+
     # retrieve query and remove it from pending queries
     query = pending_queries[expert_id]
     del pending_queries[expert_id]
-    store_object(obj=pending_queries, name="pending_queries", community=bot_username)
+    store_object(obj=pending_queries, name="pending_queries",
+                 community=bot_username)
 
     # check if answer is feedback provided by a moderator
     # TODO: generalize to any action. ( for now only final answer is checked. )
     if query.needs_feedback:
         feedback = observation
         if feedback.strip().lower() == "ok":
-            context.bot.send_message(chat_id=query.client_id, text=query.final_answer)
-            context.bot.send_message(chat_id=query.moderator_id, text="Great, I've sent the final answer to the user.")
+            context.bot.send_message(
+                chat_id=query.client_id, text=query.final_answer)
+            context.bot.send_message(
+                chat_id=query.moderator_id, text="Great, I've sent the final answer to the user.")
         else:
             try:
-                final_answer_updated = update_action_with_feedback(query=query.query_text , answer=query.final_answer, feedback=feedback, bot_username=bot_username)
+                final_answer_updated = update_action_with_feedback(
+                    query=query.query_text, answer=query.final_answer, feedback=feedback, bot_username=bot_username)
             except Exception as e:
-                context.bot.send_message(chat_id=query.client_id, text="Sorry, there was an error. Please try again later or ask the moderators for help :(.")
-                context.bot.send_message(chat_id=query.moderator_id, text=f"Error getting updated final answer: {e}")
+                context.bot.send_message(
+                    chat_id=query.client_id, text="Sorry, there was an error. Please try again later or ask the moderators for help :(.")
+                context.bot.send_message(
+                    chat_id=query.moderator_id, text=f"Error getting updated final answer: {e}")
                 return
-            context.bot.send_message(chat_id=query.client_id, text=final_answer_updated)
-            context.bot.send_message(chat_id=query.moderator_id, text=f"Ok, I've updated my answer based on your feedback and sent it to the user. \nFinal answer: {final_answer_updated}")
+            context.bot.send_message(
+                chat_id=query.client_id, text=final_answer_updated)
+            context.bot.send_message(
+                chat_id=query.moderator_id, text=f"Ok, I've updated my answer based on your feedback and sent it to the user. \nFinal answer: {final_answer_updated}")
         return
-        
+
     # add observation to query
     query.intermediate_steps.append((query.last_action, observation))
-    context.bot.send_message(chat_id=query.moderator_id, text=f"Observation: {observation}")
+    context.bot.send_message(chat_id=query.moderator_id,
+                             text=f"Observation: {observation}")
 
     try:
-        action = get_plan(bot_username=bot_username, query_text=query.query_text, username=query.client_username, intermediate_steps=query.intermediate_steps)
+        action = get_plan(bot_username=bot_username, query_text=query.query_text,
+                          username=query.client_username, intermediate_steps=query.intermediate_steps)
     except Exception as e:
-        context.bot.send_message(chat_id=query.moderator_id, text=f"Error: {e}")
+        context.bot.send_message(
+            chat_id=query.moderator_id, text=f"Error: {e}")
         return
-    
+
     query.last_action = action
     context.bot.send_message(chat_id=query.moderator_id, text=action.log)
 
     # enter query loop
     query_loop(context=context, update=update, query=query)
 
+
 def new_member(update, context):
     bot_username = context.bot.get_me().username
     for member in update.message.new_chat_members:
         if member.username == bot_username:
-            set_main_chat_id(bot_username=bot_username, chat_id=update.message.chat_id)
-            context.bot.send_message(chat_id=update.message.chat_id, text=f"Hello! I am {bot_username}. I have set this group as the main moderators group, I'll route my logs to this channel :).\n You can type /start to see what I can do. \n Also I can be much more helpful if you promote me to admin!.")
+            set_main_chat_id(bot_username=bot_username,
+                             chat_id=update.message.chat_id)
+            context.bot.send_message(chat_id=update.message.chat_id,
+                                     text=f"Hello! I am {bot_username}. I have set this group as the main moderators group, I'll route my logs to this channel :).\n You can type /start to see what I can do. \n Also I can be much more helpful if you promote me to admin!.")
             return
         else:
             add_moderator(bot_username=bot_username, moderator=member.username)
             welcome_text = f"Hello @{member.username}! I am {bot_username}. I have added you as a moderator of this community :). Please send me a message directly (on our private chat) so that I can send you messages asking you for help if I need it."
-            #I can help you with your queries. You can type /start to see what I can do."
+            # I can help you with your queries. You can type /start to see what I can do."
             instruction_text = f"Also @{member.username}, it would help me if you introduce yourself and tell me more about what your expertise is. \n e.g. I am an expert in python programming.\n"
             instruction_text += "This will help me know when to ask you for help when answering user queries."
-            context.bot.send_message(chat_id=update.message.chat_id, text=welcome_text)
-            context.bot.send_message(chat_id=update.message.chat_id, text=instruction_text)
+            context.bot.send_message(
+                chat_id=update.message.chat_id, text=welcome_text)
+            context.bot.send_message(
+                chat_id=update.message.chat_id, text=instruction_text)
             return
-
 
 
 # command that gets the tools that are available, removes the specified tool from the list, and stores the list back
@@ -734,11 +861,14 @@ def cmd_remove_tool(update, context, tool_name=None):
         context.bot.send_message(chat_id=chat_id, text=f"No tools found.")
         return
     if tool_name not in [tool['name'] for tool in tools]:
-        context.bot.send_message(chat_id=chat_id, text=f"Tool {tool_name} not found.")
+        context.bot.send_message(
+            chat_id=chat_id, text=f"Tool {tool_name} not found.")
         return
     tools = [tool for tool in tools if tool['name'] != tool_name]
-    s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/tools.json", Body=json.dumps(tools))
-    context.bot.send_message(chat_id=chat_id, text=f"Tool {tool_name} removed.")
+    s3.put_object(
+        Bucket=BUCKET, Key=f"{bot_username}/tools.json", Body=json.dumps(tools))
+    context.bot.send_message(
+        chat_id=chat_id, text=f"Tool {tool_name} removed.")
 
 
 @send_typing_action
@@ -759,18 +889,23 @@ def cmd_ask(update, context):
 
     llm = OpenAI(temperature=0.9, model_name="text-davinci-003")
     # send typing action
-    context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
-    qa = RetrievalQA.from_chain_type(llm=llm, chain_type="stuff", retriever=retriever)
-    context.bot.send_message(chat_id=update.effective_chat.id, text="Created QA Chain ..." )
-    
+    context.bot.send_chat_action(
+        chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+    qa = RetrievalQA.from_chain_type(
+        llm=llm, chain_type="stuff", retriever=retriever)
+    context.bot.send_message(
+        chat_id=update.effective_chat.id, text="Created QA Chain ...")
+
     try:
         llm_opinion = qa.run(query)
     except Exception as e:
         print(f'Could not run LLM Chain: {e}')
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Could not run LLM Chain: \n" + str(e))
+        logging.info(f'Could not run LLM Chain: {e}')
+        context.bot.send_message(
+            chat_id=update.effective_chat.id, text="Could not run LLM Chain: \n" + str(e))
         return
-    context.bot.send_message(chat_id=update.effective_chat.id, text=llm_opinion)
-
+    context.bot.send_message(
+        chat_id=update.effective_chat.id, text=llm_opinion)
 
 
 def handle_document(update: Update, context: CallbackContext):
@@ -813,35 +948,39 @@ def handle_document(update: Update, context: CallbackContext):
             text = ''
             for page_num in range(len(reader.pages)):
                 page = reader.pages[page_num].extract_text()
-                        # Split the text into lines
+                # Split the text into lines
                 lines = page.splitlines()
                 # Print each line
                 for line in lines:
                     text += line + '\n'
     else:
-        update.message.reply_text(f'Sorry I still cannot handle {document.mime_type} documents.')
+        update.message.reply_text(
+            f'Sorry I still cannot handle {document.mime_type} documents.')
         return
-    
+
     # Your processing logic here
-    update.message.reply_text(f"I've received your text document. It has {len(text)} characters.")
-    update.message.reply_text(f"Here are the first lines of it:\n\n {text[:200]}...")
+    update.message.reply_text(
+        f"I've received your text document. It has {len(text)} characters.")
+    update.message.reply_text(
+        f"Here are the first lines of it:\n\n {text[:200]}...")
 
     # delete all info in index
     pinecone.init(
         api_key=PINECONE_API_KEY,  # find at app.pinecone.io
         environment=PINECONE_ENV  # next to api key in console
-    )        
+    )
     index_name = 'grouplang'
     index = pinecone.Index(index_name=index_name)
-
 
     # text = s3_response['Body'].read()
     metadata = {"source": s3_key}
     documents = [Document(page_content=text, metadata=metadata)]
-    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=0, separator="\n")
+    text_splitter = CharacterTextSplitter(
+        chunk_size=1000, chunk_overlap=0, separator="\n")
     docs = text_splitter.split_documents(documents)
 
-    context.bot.send_message(chat_id=update.effective_chat.id, text="Indexing document..." )
+    context.bot.send_message(
+        chat_id=update.effective_chat.id, text="Indexing document...")
 
     # docsearch = Pinecone.from_documents(docs, embeddings, index_name=index_name)
     texts = [d.page_content for d in docs]
@@ -852,7 +991,8 @@ def handle_document(update: Update, context: CallbackContext):
     text_key = "text"
     ids = None
     namespace = None
-    context.bot.send_message(chat_id=update.effective_chat.id, text=f"Number of chunks = {len(texts)}. Batch size = {batch_size} \n Entering indexing loop..." )
+    context.bot.send_message(chat_id=update.effective_chat.id,
+                             text=f"Number of chunks = {len(texts)}. Batch size = {batch_size} \n Entering indexing loop...")
     for i in range(0, len(texts), batch_size):
         # set end position of batch
         i_end = min(i + batch_size, len(texts))
@@ -865,9 +1005,10 @@ def handle_document(update: Update, context: CallbackContext):
             ids_batch = [str(uuid.uuid4()) for n in range(i, i_end)]
         # create embeddings
         embeds = embeddings.embed_documents(lines_batch)
-        context.bot.send_message(chat_id=update.effective_chat.id, text=f"Batch {i} to {i_end} embedded." )
+        context.bot.send_message(
+            chat_id=update.effective_chat.id, text=f"Batch {i} to {i_end} embedded.")
         print(f"Batch {i} to {i_end} embedded.")
-
+        logging.info(f"Batch {i} to {i_end} embedded.")
         # prep metadata and upsert batch
         if metadatas:
             metadata = metadatas[i:i_end]
@@ -880,72 +1021,93 @@ def handle_document(update: Update, context: CallbackContext):
         # upsert to Pinecone
         index.upsert(vectors=list(to_upsert), namespace=namespace)
         print(f"Batch {i} to {i_end} upserted.")
-    context.bot.send_message(chat_id=update.effective_chat.id, text="Ok, the document is indexed :)." )
+        logging.info(f"Batch {i} to {i_end} upserted.")
+    context.bot.send_message(
+        chat_id=update.effective_chat.id, text="Ok, the document is indexed :).")
+
 
 def cmd_reset_index(update: Update, context: CallbackContext):
     pinecone.init(
         api_key=PINECONE_API_KEY,  # find at app.pinecone.io
         environment=PINECONE_ENV  # next to api key in console
-    )        
+    )
     index_name = 'grouplang'
     index = pinecone.Index(index_name=index_name)
     stats = index.describe_index_stats()
     namespaces = stats["namespaces"]
     for ns in namespaces:
         index.delete(delete_all=True, namespace=ns)
-    context.bot.send_message(chat_id=update.effective_chat.id, text="Ok, I have reset the index." )
+    context.bot.send_message(
+        chat_id=update.effective_chat.id, text="Ok, I have reset the index.")
+
 
 def cmd_enable_feedback(update: Update, context: CallbackContext):
     bot_username = context.bot.get_me().username
     username = update.message.from_user.username
     moderators = get_moderators(bot_username)
-    #check if moderator
+    # check if moderator
     if username in moderators:
         config = get_config(bot_username)
         config['feedback_mode'] = 'yes'
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Ok, feedback mode is enabled." )
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
+        context.bot.send_message(
+            chat_id=update.effective_chat.id, text="Ok, feedback mode is enabled.")
     else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Sorry, that command is only available to moderators." )
+        context.bot.send_message(chat_id=update.effective_chat.id,
+                                 text="Sorry, that command is only available to moderators.")
+
 
 def cmd_disable_feedback(update: Update, context: CallbackContext):
     bot_username = context.bot.get_me().username
     username = update.message.from_user.username
     moderators = get_moderators(bot_username)
-    #check if moderator
+    # check if moderator
     if username in moderators:
         config = get_config(bot_username)
         config['feedback_mode'] = 'no'
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Ok, feedback mode is disabled." )
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
+        context.bot.send_message(
+            chat_id=update.effective_chat.id, text="Ok, feedback mode is disabled.")
 
 # enable debug
+
+
 def cmd_enable_debug(update: Update, context: CallbackContext):
     bot_username = context.bot.get_me().username
     username = update.message.from_user.username
     moderators = get_moderators(bot_username)
-    #check if moderator
+    # check if moderator
     if username in moderators:
         config = get_config(bot_username)
         config['debug'] = 'yes'
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Ok, debug mode is enabled." )
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
+        context.bot.send_message(
+            chat_id=update.effective_chat.id, text="Ok, debug mode is enabled.")
     else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Sorry, that command is only available to moderators." )
-    
+        context.bot.send_message(chat_id=update.effective_chat.id,
+                                 text="Sorry, that command is only available to moderators.")
+
 # disable debug
+
+
 def cmd_disable_debug(update: Update, context: CallbackContext):
     bot_username = context.bot.get_me().username
     username = update.message.from_user.username
     moderators = get_moderators(bot_username)
-    #check if moderator
-    if username in moderators: 
+    # check if moderator
+    if username in moderators:
         config = get_config(bot_username)
         config['debug'] = 'no'
-        s3.put_object(Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Ok, debug mode is disabled." )
+        s3.put_object(
+            Bucket=BUCKET, Key=f"{bot_username}/config.json", Body=json.dumps(config))
+        context.bot.send_message(
+            chat_id=update.effective_chat.id, text="Ok, debug mode is disabled.")
     else:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="Sorry, that command is only available to moderators." )
+        context.bot.send_message(chat_id=update.effective_chat.id,
+                                 text="Sorry, that command is only available to moderators.")
 
 
 def handle_url(update: Update, context: CallbackContext, url=None):
@@ -953,23 +1115,25 @@ def handle_url(update: Update, context: CallbackContext, url=None):
     chat_id = update.message.chat_id
     url = update.message.text
     tmp_repo_path = '/tmp/repo'
-    context.bot.send_message(chat_id=chat_id, text=f"Got url {url}." )
+    context.bot.send_message(chat_id=chat_id, text=f"Got url {url}.")
     repo = Repo.clone_from(url, tmp_repo_path)
     try:
         repo.git.checkout("main")
     except:
         repo.git.checkout("master")
     # inform user
-    context.bot.send_message(chat_id=chat_id, text=f"Cloned repo {url} to {tmp_repo_path}." )
+    context.bot.send_message(
+        chat_id=chat_id, text=f"Cloned repo {url} to {tmp_repo_path}.")
 
     docs = []
     current_file = 0
     print("loading files from repository...")
+    logging.info("loading files from repository...")
     for item in repo.tree().traverse():
         if not isinstance(item, Blob):
             continue
         file_path = os.path.join(tmp_repo_path, item.path)
-        
+
         ignored_files = repo.ignored([file_path])
         if len(ignored_files):
             continue
@@ -996,10 +1160,13 @@ def handle_url(update: Update, context: CallbackContext, url=None):
                 docs.append(doc)
         except Exception as e:
             print(f"Error reading file {file_path}: {e}")
+            logging.info(f"Error reading file {file_path}: {e}")
         current_file += 1
         if current_file % 10 == 0:
             print(f'loaded {current_file} files', end='\r')
-            context.bot.send_message(chat_id=chat_id, text=f'loaded {current_file} files')
+            logging.info(f'loaded {current_file} files')
+            context.bot.send_message(
+                chat_id=chat_id, text=f'loaded {current_file} files')
 
     ext_to_lang = {
         ".py": Language.PYTHON,
@@ -1021,22 +1188,26 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 
     all_docs = []
 
-    context.bot.send_message(chat_id=chat_id, text=f'loaded {current_file} files. Splitting files into chunks...')
+    context.bot.send_message(
+        chat_id=chat_id, text=f'loaded {current_file} files. Splitting files into chunks...')
     for doc in docs:
         print(doc.metadata['file_type'])
+        logging.info(doc.metadata['file_type'])
         if doc.metadata['file_type'] in ext_to_lang:
-            splitter = RecursiveCharacterTextSplitter.from_language(language=ext_to_lang[doc.metadata['file_type']])
+            splitter = RecursiveCharacterTextSplitter.from_language(
+                language=ext_to_lang[doc.metadata['file_type']])
         else:
             splitter = CharacterTextSplitter()
         split_docs = splitter.split_documents([doc])
         all_docs.extend(split_docs)
-    context.bot.send_message(chat_id=chat_id, text=f'Split into {len(all_docs)} chunks.')
+    context.bot.send_message(
+        chat_id=chat_id, text=f'Split into {len(all_docs)} chunks.')
 
     embeddings = OpenAIEmbeddings()
     pinecone.init(
         api_key=PINECONE_API_KEY,  # find at app.pinecone.io
         environment=PINECONE_ENV  # next to api key in console
-    )   
+    )
 
     index_name = 'grouplang'
     index = pinecone.Index(index_name=index_name)
@@ -1060,7 +1231,8 @@ def handle_url(update: Update, context: CallbackContext, url=None):
             ids_batch = [str(uuid.uuid4()) for n in range(i, i_end)]
         # create embeddings
         embeds = embeddings.embed_documents(lines_batch)
-        context.bot.send_message(chat_id=update.effective_chat.id, text=f"Batch {i} to {i_end} embedded." )
+        context.bot.send_message(
+            chat_id=update.effective_chat.id, text=f"Batch {i} to {i_end} embedded.")
 
         # prep metadata and upsert batch
         if metadatas:
@@ -1074,8 +1246,10 @@ def handle_url(update: Update, context: CallbackContext, url=None):
         # upsert to Pinecone
         index.upsert(vectors=list(to_upsert), namespace=namespace)
         print(f"Batch {i} to {i_end} embedded and indexed.")
+        logging.info(f"Batch {i} to {i_end} embedded and indexed.")
 
-    context.bot.send_message(chat_id=update.effective_chat.id, text="Ok, the repository is indexed :)." )
+    context.bot.send_message(
+        chat_id=update.effective_chat.id, text="Ok, the repository is indexed :).")
 
 # def cmd_relevant_docs(update, context, query=None):
 #     bot_username = context.bot.get_me().username
@@ -1153,7 +1327,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 # def cmd_task(update, context):
 #     bot_username = context.bot.get_me().username
 #     chat_id = update.message.chat_id
-#     query = ' '.join(context.args)    
+#     query = ' '.join(context.args)
 
 #     context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 #     context.bot.send_message(chat_id=chat_id, text="Ok let me think of a plan....")
@@ -1279,7 +1453,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     chat_id = update.message.chat_id
 #     user_id = update.message.from_user.id
 #     username = update.message.from_user.username
-    
+
 #     if kwargs.get('username'):
 #         reviewed_username = kwargs.get('username')
 #         review_text = kwargs.get('review')
@@ -1310,12 +1484,11 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     if not matched:
 #         context.bot.send_message(chat_id=chat_id, text="You can only review matches you have had.", parse_mode=ParseMode.MARKDOWN,)
 #         return
-    
+
 #     # store review
 #     store_review(bot_username, user_id, reviewed_userid, review_text)
 #     # send message to user
 #     context.bot.send_message(chat_id=chat_id, text=f"Your review of {reviewed_username} has been stored.", parse_mode=ParseMode.MARKDOWN,)
-    
 
 
 # def handle_accept_request(update, context):
@@ -1359,7 +1532,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #         # tell user that he can review the interaction after the fact with the command '/review_match <username> <review text>'
 #         message = f"You can review the interaction after the fact with the command '/review_match @{offerer_username} <review text>'"
 #         context.bot.send_message(chat_id=chat_id, text=message)
-        
+
 #     elif action == "accept_offer_no":
 #         # The requester declined the offer
 #         context.bot.send_message(chat_id=chat_id, text="You have declined the offer.")
@@ -1439,7 +1612,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     database_obj = get_database_object(bot_username)
 #     # get database metadata
 #     metadata = database_obj.get("Metadata", {})
-#     # check if database is updated    
+#     # check if database is updated
 #     updated = metadata.get("updated", "false")
 
 #     # if database is updated, send it to user
@@ -1454,7 +1627,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 
 #     # if database is not updated then create it again with the new information
 #     csv_buffer = create_database(bot_username)
-    
+
 #     # add updated attribute to metadata of csv file
 #     metadata = {"updated": "true"}
 
@@ -1495,7 +1668,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     elif state_update_method == "summarize":
 #         current_user = get_user_summary(bot_username, user_id)
 #         users_dict = {user_id: get_user_summary(bot_username, user_id) for user_id in users_dict.keys()}
-    
+
 #     match_prompt = get_match_prompt(bot_username)
 #     input_variables_list = extract_variables_from_template(match_prompt)
 
@@ -1507,9 +1680,9 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     for candidate_user_id, user in users_dict.items():
 #         print(f"key: {candidate_user_id}, user: {user}, current user_id: {user_id}")
 #         # skip current user to avoid self-match
-#         if candidate_user_id == str(user_id): 
+#         if candidate_user_id == str(user_id):
 #             continue
-        
+
 #         # evaluate potential match
 #         input_variables_values = [current_user, user]
 #         input_variables = dict(zip(input_variables_list, input_variables_values))
@@ -1517,7 +1690,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #         context.bot.send_message(chat_id=chat_id,
 #             text=f'This is a potential match:\n user1: {current_user} \n user2: {user} \n llm opinion: {llm_opinion} \n match decision: {is_match}',
 #             parse_mode=ParseMode.MARKDOWN,)
-        
+
 #         # inform other user incase of match
 #         if is_match == True:
 #             context.bot.send_message(chat_id=chat_id, text=f"there is one match", parse_mode=ParseMode.MARKDOWN,)
@@ -1525,7 +1698,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #             return
 #         elif is_match == None:
 #             context.bot.send_message(chat_id=chat_id, text="There was an exception handling your message :(", parse_mode=ParseMode.MARKDOWN, )
-#             break   
+#             break
 
 # # Search for global matches
 # @send_typing_action
@@ -1572,7 +1745,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 
 #         # show all matches
 #         context.bot.send_message(chat_id=chat_id, text=f"llm opinion: {llm_opinion}", parse_mode=ParseMode.MARKDOWN, )
-        
+
 #         users_keys = list(users_dict.keys())
 #         # inform users of matches
 #         for pair in matched_pairs:
@@ -1621,7 +1794,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #         existing_content[username].append(feedback)
 #         response = s3.put_object(Bucket=BUCKET, Key=feedback_key, Body=json.dumps(existing_content))
 #         context.bot.send_message(chat_id=chat_id, text="Your feedback was added successfully, Thank you!.", parse_mode=ParseMode.MARKDOWN,)
-#     else:    
+#     else:
 #         context.bot.send_message(chat_id=chat_id, text="please add your feedback after the /feedback command. e.g. /feedback 'this is my feedback'", parse_mode=ParseMode.MARKDOWN,)
 
 # # Resets the information of the user
@@ -1641,7 +1814,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     moderators_key = f"{bot_username}/moderators"
 
 #     # get moderators
-#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)        
+#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)
 #     moderators = json.loads(response['Body'].read().decode('utf-8'))
 
 #     if (username == 'MAIN_MOD_USERNAME' or username in moderators):
@@ -1652,7 +1825,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #                 key = obj['Key']
 #                 if key.split('/', 1)[1][0].isdigit():
 #                     s3.delete_object(Bucket=BUCKET, Key=key)
-        
+
 #         # pending queries
 #         pending_queries = {}
 #         store_object(pending_queries, community=bot_username, name='pending_queries')
@@ -1674,7 +1847,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     moderators_key = f"{bot_username}/moderators"
 
 #     # get moderators
-#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)        
+#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)
 #     moderators = json.loads(response['Body'].read().decode('utf-8'))
 
 #     if (username == 'MAIN_MOD_USERNAME' or username in moderators):
@@ -1707,7 +1880,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     moderators_key = f"{bot_username}/moderators"
 
 #     # get moderators
-#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)        
+#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)
 #     moderators = json.loads(response['Body'].read().decode('utf-8'))
 
 #     if (username == 'MAIN_MOD_USERNAME' or username in moderators):
@@ -1753,7 +1926,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     else:
 #         context.bot.send_message(chat_id=chat_id, text="sorry, only moderators can use this command.", parse_mode=ParseMode.MARKDOWN,)
 
-# # Sets the summary prompt 
+# # Sets the summary prompt
 # def cmd_set_summary_prompt(update, context, prompt=None):
 #     bot_username = context.bot.get_me().username
 #     chat_id = update.message.chat_id
@@ -1768,7 +1941,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     moderators_key = f"{bot_username}/moderators"
 
 #     # get moderators
-#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)        
+#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)
 #     moderators = json.loads(response['Body'].read().decode('utf-8'))
 
 #     if (username == 'MAIN_MOD_USERNAME' or username in moderators):
@@ -1801,7 +1974,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     moderators_key = f"{bot_username}/moderators"
 
 #     # get moderators
-#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)        
+#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)
 #     moderators = json.loads(response['Body'].read().decode('utf-8'))
 
 #     if (username == 'MAIN_MOD_USERNAME' or username in moderators):
@@ -1819,7 +1992,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     else:
 #         context.bot.send_message(chat_id=chat_id, text="sorry, only moderators can use this command.", parse_mode=ParseMode.MARKDOWN,)
 
-# # Sets the state update method 
+# # Sets the state update method
 # def cmd_set_state_update_method(update, context):
 #     bot_username = context.bot.get_me().username
 #     chat_id = update.message.chat_id
@@ -1829,7 +2002,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #     moderators_key = f"{bot_username}/moderators"
 
 #     # get moderators
-#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)        
+#     response = s3.get_object(Bucket=BUCKET, Key=moderators_key)
 #     moderators = json.loads(response['Body'].read().decode('utf-8'))
 
 #     if (username == 'MAIN_MOD_USERNAME' or username in moderators):
@@ -1839,7 +2012,7 @@ def handle_url(update: Update, context: CallbackContext, url=None):
 #             methods = json.loads(response['Body'].read().decode('utf-8'))
 #         except s3.exceptions.NoSuchKey:
 #             methods = {}
-        
+
 #         if state_update_method in {"concatenate", "summarize"}:
 #             methods["state_update"] = state_update_method
 #             s3.put_object(Bucket=BUCKET, Key=methods_key, Body=json.dumps(methods))
