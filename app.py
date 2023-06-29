@@ -70,7 +70,7 @@ def process_message(update, context):
 
     print(
         f"Received message from {username} ({user_id}) in chat {chat_id} . message: ({chat_text})")
-    logging.info(f"Received message from {username} ({user_id}) in chat {chat_id}. Message: {chat_text}")
+    logging.info(f"Received message from {username} ({user_id}) in chat {chat_id}. Message: {chat_text} -- MAIN BOT {MAIN_BOT_NAME}")
     
     # ignore text if main bot
     if bot_username == MAIN_BOT_NAME or chat_text.startswith("/"):
