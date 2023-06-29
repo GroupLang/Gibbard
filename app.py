@@ -22,7 +22,8 @@ logging.basicConfig(level=logging.INFO)
 # s3 = boto3.client("s3")
 AWS_REGION = "us-east-1"
 ENDPOINT_URL = "http://localhost:4566"
-s3 = boto3.client("s3", region_name=AWS_REGION, endpoint_url=ENDPOINT_URL)
+session = boto3.Session(profile_name='localstack') # made default session as localstack
+s3 = session.client("s3", region_name=AWS_REGION, endpoint_url=ENDPOINT_URL)
 app = Chalice(app_name=APP_NAME)
 app.debug = True
 
@@ -168,11 +169,13 @@ def message_handler(event, context):
     community_id = event['queryStringParameters']['community_id']
     print(f"got event: {event}")
     logging.info(f"Got event: {event}")
+    logging.info(f"Got community_id: {community_id}")
 
     # verify that the community_id/bot_token is registered in the bots database
     bots_db_key = "bots_id_to_token.json"
     response = s3.get_object(Bucket=PRIVATE_BUCKET, Key=bots_db_key)
     bots_db = json.loads(response['Body'].read().decode('utf-8'))
+    logging.info(f"--> MESSAGE HANDLER --> {str(bots_db)}")
 
     if community_id not in bots_db.values():
         print(f"Unauthorized Bot Token: {community_id}")
@@ -195,6 +198,7 @@ def message_handler(event, context):
             response['Body'].read().decode('utf-8')))
     except Exception as e:
         app.log.error(e)
+        logging.info(f"--> MESSAGE HANDLER --> {str(e)}")
         processed_messages = set()
 
     event_body = json.loads(event['body'])
@@ -202,6 +206,7 @@ def message_handler(event, context):
 
     if update_id in processed_messages:
         app.log.info(f"Message already processed: {update_id}")
+        logging.info(f"--> MESSAGE HANDLER --> Message already processed: {update_id}")
         return {
             "statusCode": 200,
             "body": json.dumps({
@@ -210,6 +215,7 @@ def message_handler(event, context):
         }
     else:
         app.log.info(f"Processing message: {update_id}")
+        logging.info(f"--> MESSAGE HANDLER --> Processing message: {update_id}")
         processed_messages.add(update_id)
         s3.put_object(Bucket=BUCKET, Key=PROCESSED_MESSAGES_KEY,
                       Body=json.dumps(list(processed_messages)))
